@@ -7,6 +7,7 @@ import sdl2.ext
 import numpy as np
 import cv2
 import threading
+import math
 
 class VideoStream:
     def __init__(self, url):
@@ -44,9 +45,8 @@ def main():
         "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=3&subtype=0",
         "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=4&subtype=0",
         "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=5&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=6&subtype=0"
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=7&subtype=0"
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=8&subtype=0"
+        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=6&subtype=0",
+        "https://rt-esp.rttv.com/dvr/rtesp/playlist_800Kb.m3u8"
     ]
 
     # Inicializar SDL2
@@ -80,31 +80,34 @@ def main():
                         mute_proc.kill()
                     else:
                         # Ejecutar comando para reproducir el stream con sonido
-                         mute_proc = subprocess.Popen(mute_cmd.split())
+                        mute_proc = subprocess.Popen(mute_cmd.split())
             elif event.type == sdl2.SDL_MOUSEBUTTONDOWN:
                 if maximized_index is None:
-                    # Obtener posición del mouse
                     mouse_x = event.button.x
                     mouse_y = event.button.y
                     display_w, display_h = window.size
-                    panel_w = display_w // 3
-                    panel_h = display_h // 2
+                    N = len(streams)
+                    columnas = int(math.ceil(N ** 0.5))
+                    filas = int(math.ceil(N / columnas))
+                    panel_w = display_w // columnas
+                    panel_h = display_h // filas
                     col = mouse_x // panel_w
                     row = mouse_y // panel_h
-                    idx = int(row * 3 + col)
-                    if 0 <= idx < len(streams):
+                    idx = int(row * columnas + col)
+                    if 0 <= idx < N:
                         maximized_index = idx
                 else:
-                    # Si ya hay uno maximizado, cualquier clic restaura la vista
                     maximized_index = None
 
         display_w, display_h = window.size
-        panel_w = display_w // 3
-        panel_h = display_h // 2
+        N = len(streams)
+        columnas = int(math.ceil(N ** 0.5))
+        filas = int(math.ceil(N / columnas))
+        panel_w = display_w // columnas
+        panel_h = display_h // filas
 
         renderer.clear()
         if maximized_index is None:
-            # Renderizar todos los streams
             for i, stream in enumerate(streams):
                 frame = stream.get_frame()
                 if frame is not None:
@@ -117,16 +120,14 @@ def main():
                         panel_w, panel_h
                     )
                     sdl2.SDL_UpdateTexture(texture, None, frame_rgb.ctypes.data, panel_w * 3)
-                    x = (i % 3) * panel_w
-                    y = (i // 3) * panel_h
+                    x = (i % columnas) * panel_w
+                    y = (i // columnas) * panel_h
                     sdl2.SDL_RenderCopy(renderer.sdlrenderer, texture, None, sdl2.SDL_Rect(x, y, panel_w, panel_h))
                     sdl2.SDL_DestroyTexture(texture)
         else:
-            # Renderizar solo el stream maximizado
             stream = streams[maximized_index]
             frame = stream.get_frame()
             if frame is not None:
-                # Redimensionar a toda la ventana
                 frame_resized = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_AREA)
                 frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
                 texture = sdl2.SDL_CreateTexture(
