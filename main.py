@@ -80,7 +80,7 @@ class VideoStream:
             '-f', 'rawvideo',
             'pipe:1'
         ]
-        
+
         # Solo agregar audio si el stream tiene audio
         if has_audio:
             ffmpeg_cmd.extend([
@@ -106,7 +106,7 @@ class VideoStream:
 
         self.thread = threading.Thread(target=self.update)
         self.thread.start()
-        
+
         # Solo crear hilo de audio si el stream tiene audio
         if has_audio:
             self.audio_reader_thread = threading.Thread(target=self._audio_reader)
@@ -277,18 +277,18 @@ def test_stream_accessibility(url):
 
 def main():
     setup_debug()
-    
+
     # Configuración de los streams RTSP
-    RTSP_URLS = [
-            "https://s81.ipcamlive.com/streams_timeshift/285cbf3053597caa2/stream.m3u8",
-            "https://s61.ipcamlive.com/streams/3dblxt98eyv3wus5q/stream.m3u8",
-            "https://streaming.novazion.com/HotelCarre/hotelcarre.stream/playlist.m3u8",
-    ]
+    RTSP_URLS = []
+    for line in open("streams.txt").readlines():
+        line = line.strip()
+        if line and not line.startswith('#'):
+            RTSP_URLS.append(line)
 
     # Inicializar SDL2
     sdl2.ext.init()
     screen_width, screen_height = get_screen_size()
-    window = sdl2.ext.Window("RTSP Stream", size=(screen_width, screen_height), flags=sdl2.SDL_WINDOW_RESIZABLE)
+    window = sdl2.ext.Window("Live Stream Visor", size=(screen_width, screen_height), flags=sdl2.SDL_WINDOW_FULLSCREEN)
     window.show()
     renderer = sdl2.ext.Renderer(window)
 
@@ -300,7 +300,7 @@ def main():
         if not is_accessible:
             debug_print(f"Skipping {url} - not accessible")
             continue
-        
+
         try:
             width, height = get_stream_size(url)
         except Exception as e:
@@ -308,7 +308,7 @@ def main():
             width, height = 640, 480
         streams.append(VideoStream(url, width, height, has_audio))
         debug_print(f"Successfully created stream for {url}")
-    
+
     debug_print(f"\nTotal streams created: {len(streams)}")
     if len(streams) == 0:
         debug_print("No streams could be created. Exiting.")
@@ -321,8 +321,6 @@ def main():
     # Bucle principal
     running = True
     mute = True
-    mute_cmd = "mpv --quiet --no-terminal --vo=null rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=2&subtype=0"
-    mute_proc = object()
     while running:
         for event in sdl2.ext.get_events():
             if event.type == sdl2.SDL_QUIT:
@@ -330,14 +328,6 @@ def main():
             elif event.type == sdl2.SDL_KEYDOWN:
                 if event.key.keysym.sym == sdl2.SDLK_ESCAPE:
                     running = False
-                elif event.key.keysym.sym == sdl2.SDLK_m:
-                    # Alternar mute
-                    mute = not mute
-                    if mute:
-                        mute_proc.kill()
-                    else:
-                        # Ejecutar comando para reproducir el stream con sonido
-                        mute_proc = subprocess.Popen(mute_cmd.split())
             elif event.type == sdl2.SDL_MOUSEBUTTONDOWN:
                 if maximized_index is None:
                     mouse_x = event.button.x
