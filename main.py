@@ -12,7 +12,22 @@ import json
 import sounddevice as sd
 import os
 import re
+import argparse
 
+# Variable global para debug
+DEBUG = False
+
+def debug_print(*args, **kwargs):
+    """Función para imprimir solo si debug está habilitado"""
+    if DEBUG:
+        print(*args, **kwargs)
+
+def setup_debug():
+    """Configurar debug basado en argumentos de línea de comandos"""
+    global DEBUG
+    parser = argparse.ArgumentParser(description='RTSP Stream Viewer')
+    parser.add_argument('-debug', action='store_true', help='Enable debug output')
+    args = parser.parse_args()
 def get_screen_size():
     """Obtener el tamaño de la pantalla usando xrandr"""
     try:
@@ -24,13 +39,13 @@ def get_screen_size():
                 if match:
                     width = int(match.group(1))
                     height = int(match.group(2))
-                    print(f"Screen size detected: {width}x{height}")
+                    debug_print(f"Screen size detected: {width}x{height}")
                     return width, height
         # Si no encuentra, usar valores por defecto
-        print("Could not detect screen size, using default 1920x1080")
+        debug_print("Could not detect screen size, using default 1920x1080")
         return 1920, 1080
     except Exception as e:
-        print(f"Error getting screen size: {e}, using default 1920x1080")
+        debug_print(f"Error getting screen size: {e}, using default 1920x1080")
         return 1920, 1080
 
 class VideoStream:
@@ -83,7 +98,7 @@ class VideoStream:
             bufsize=10**8
         )
         self.audio_pipe = self.proc.stderr
-        print(f"FFmpeg process started for {url} (PID: {self.proc.pid})")
+        debug_print(f"FFmpeg process started for {url} (PID: {self.proc.pid})")
 
         # Hilo para leer errores de ffmpeg
         self.error_thread = threading.Thread(target=self._error_reader)
@@ -108,12 +123,12 @@ class VideoStream:
             if len(raw_frame) == frame_size:
                 frames_received += 1
                 if frames_received % 30 == 0:  # Cada 30 frames
-                    print(f"Received {frames_received} frames from {self.url}")
+                    debug_print(f"Received {frames_received} frames from {self.url}")
             if len(raw_frame) != frame_size:
                 consecutive_errors += 1
-                print(f"Frame size mismatch: expected {frame_size}, got {len(raw_frame)} from {self.url}")
+                debug_print(f"Frame size mismatch: expected {frame_size}, got {len(raw_frame)} from {self.url}")
                 if consecutive_errors > 10:
-                    print(f"Too many consecutive errors reading frames from {self.url}")
+                    debug_print(f"Too many consecutive errors reading frames from {self.url}")
                     break
                 continue
             consecutive_errors = 0
@@ -126,7 +141,7 @@ class VideoStream:
     def is_working(self):
         """Verificar si el stream está funcionando correctamente"""
         if self.proc.poll() is not None:
-            print(f"FFmpeg process for {self.url} has terminated")
+            debug_print(f"FFmpeg process for {self.url} has terminated")
             return False
         return self.frame is not None
 
@@ -136,7 +151,7 @@ class VideoStream:
             try:
                 error_line = self.proc.stderr.readline()
                 if error_line:
-                    print(f"FFmpeg error for {self.url}: {error_line.decode().strip()}")
+                    debug_print(f"FFmpeg error for {self.url}: {error_line.decode().strip()}")
             except:
                 break
 
@@ -144,7 +159,7 @@ class VideoStream:
         """Hilo que lee continuamente el audio del pipe"""
         blocksize = 4096
         channels = 2
-        print(f"Audio reader started for {self.url}")
+        debug_print(f"Audio reader started for {self.url}")
         bytes_read = 0
         while self.running:
             try:
@@ -157,21 +172,21 @@ class VideoStream:
                         if len(self.audio_buffer) > 10:
                             self.audio_buffer.pop(0)
                         if len(self.audio_buffer) % 5 == 0:  # Solo imprimir cada 5 bloques
-                            print(f"Audio buffer size: {len(self.audio_buffer)}, total bytes: {bytes_read}")
+                            debug_print(f"Audio buffer size: {len(self.audio_buffer)}, total bytes: {bytes_read}")
                 else:
                     time.sleep(0.01)  # Esperar un poco si no hay datos
             except Exception as e:
-                print(f"Error reading audio: {e}")
+                debug_print(f"Error reading audio: {e}")
                 break
-        print(f"Audio reader stopped for {self.url}, total bytes read: {bytes_read}")
+        debug_print(f"Audio reader stopped for {self.url}, total bytes read: {bytes_read}")
 
     def start_audio(self):
         if not self.has_audio:
-            print(f"Cannot start audio for {self.url} - no audio stream")
+            debug_print(f"Cannot start audio for {self.url} - no audio stream")
             return
         if self.audio_running:
             return
-        print(f"Starting audio for {self.url}")
+        debug_print(f"Starting audio for {self.url}")
         self.audio_running = True
         self.audio_thread = threading.Thread(target=self._audio_loop)
         self.audio_thread.start()
@@ -179,7 +194,7 @@ class VideoStream:
     def stop_audio(self):
         if not self.audio_running:
             return
-        print(f"Stopping audio for {self.url}")
+        debug_print(f"Stopping audio for {self.url}")
         self.audio_running = False
         if self.audio_thread is not None:
             self.audio_thread.join()
@@ -189,7 +204,7 @@ class VideoStream:
         samplerate = 44100
         channels = 2
         blocksize = 4096
-        print(f"Audio loop started for {self.url}")
+        debug_print(f"Audio loop started for {self.url}")
         try:
             stream = sd.RawOutputStream(samplerate=samplerate, channels=channels, dtype='int16', blocksize=blocksize)
             stream.start()
@@ -199,15 +214,15 @@ class VideoStream:
                         if self.audio_buffer:
                             data = self.audio_buffer.pop(0)
                             stream.write(data)
-                            print(f"Playing audio block, remaining: {len(self.audio_buffer)}")
+                            debug_print(f"Playing audio block, remaining: {len(self.audio_buffer)}")
                         else:
                             time.sleep(0.01)  # Esperar si no hay datos
             finally:
                 stream.stop()
                 stream.close()
         except Exception as e:
-            print(f"Error in audio loop: {e}")
-        print(f"Audio loop stopped for {self.url}")
+            debug_print(f"Error in audio loop: {e}")
+        debug_print(f"Audio loop stopped for {self.url}")
 
     def stop(self):
         self.running = False
@@ -248,19 +263,21 @@ def test_stream_accessibility(url):
             info = json.loads(result.stdout)
             has_video = any(stream.get('codec_type') == 'video' for stream in info.get('streams', []))
             has_audio = any(stream.get('codec_type') == 'audio' for stream in info.get('streams', []))
-            print(f"Stream {url} is accessible, has video: {has_video}, has audio: {has_audio}")
+            debug_print(f"Stream {url} is accessible, has video: {has_video}, has audio: {has_audio}")
             return True, has_audio
         else:
-            print(f"Stream {url} is not accessible (return code: {result.returncode})")
+            debug_print(f"Stream {url} is not accessible (return code: {result.returncode})")
             return False, False
     except subprocess.TimeoutExpired:
-        print(f"Stream {url} timeout")
+        debug_print(f"Stream {url} timeout")
         return False, False
     except Exception as e:
-        print(f"Stream {url} error: {e}")
+        debug_print(f"Stream {url} error: {e}")
         return False, False
 
 def main():
+    setup_debug()
+    
     # Configuración de los streams RTSP
     RTSP_URLS = [
             "https://s81.ipcamlive.com/streams_timeshift/285cbf3053597caa2/stream.m3u8",
@@ -278,23 +295,23 @@ def main():
     # Crear una lista de flujos de video
     streams = []
     for url in RTSP_URLS:
-        print(f"\n--- Testing stream: {url} ---")
+        debug_print(f"\n--- Testing stream: {url} ---")
         is_accessible, has_audio = test_stream_accessibility(url)
         if not is_accessible:
-            print(f"Skipping {url} - not accessible")
+            debug_print(f"Skipping {url} - not accessible")
             continue
         
         try:
             width, height = get_stream_size(url)
         except Exception as e:
-            print(f"No se pudo obtener tamaño de {url}: {e}, usando 640x480")
+            debug_print(f"No se pudo obtener tamaño de {url}: {e}, usando 640x480")
             width, height = 640, 480
         streams.append(VideoStream(url, width, height, has_audio))
-        print(f"Successfully created stream for {url}")
+        debug_print(f"Successfully created stream for {url}")
     
-    print(f"\nTotal streams created: {len(streams)}")
+    debug_print(f"\nTotal streams created: {len(streams)}")
     if len(streams) == 0:
-        print("No streams could be created. Exiting.")
+        debug_print("No streams could be created. Exiting.")
         return
 
     # Variable para saber si hay un stream maximizado
@@ -378,7 +395,7 @@ def main():
         else:
             stream = streams[maximized_index]
             if not stream.is_working():
-                print(f"Maximized stream {maximized_index} is not working")
+                debug_print(f"Maximized stream {maximized_index} is not working")
                 maximized_index = None
                 continue
             frame = stream.get_frame()
@@ -407,5 +424,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"Error: {e}")
+        debug_print(f"Error: {e}")
         sys.exit(1)
