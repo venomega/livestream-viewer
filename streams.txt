@@ -1,0 +1,3 @@
+https://s81.ipcamlive.com/streams_timeshift/285cbf3053597caa2/stream.m3u8
+https://s61.ipcamlive.com/streams/3dblxt98eyv3wus5q/stream.m3u8
+https://streaming.novazion.com/HotelCarre/hotelcarre.stream/playlist.m3u8
