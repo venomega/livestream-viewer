@@ -11,9 +11,30 @@ import math
 import json
 import sounddevice as sd
 import os
+import re
+
+def get_screen_size():
+    """Obtener el tamaño de la pantalla usando xrandr"""
+    try:
+        result = subprocess.run(['xrandr'], capture_output=True, text=True)
+        # Buscar la línea que contiene la resolución activa
+        for line in result.stdout.split('\n'):
+            if '*' in line:  # La línea con * indica la resolución activa
+                match = re.search(r'(\d+)x(\d+)', line)
+                if match:
+                    width = int(match.group(1))
+                    height = int(match.group(2))
+                    print(f"Screen size detected: {width}x{height}")
+                    return width, height
+        # Si no encuentra, usar valores por defecto
+        print("Could not detect screen size, using default 1920x1080")
+        return 1920, 1080
+    except Exception as e:
+        print(f"Error getting screen size: {e}, using default 1920x1080")
+        return 1920, 1080
 
 class VideoStream:
-    def __init__(self, url, width, height):
+    def __init__(self, url, width, height, has_audio=False):
         self.url = url
         self.width = width
         self.height = height
@@ -24,47 +45,100 @@ class VideoStream:
         self.audio_pipe = None
         self.audio_buffer = []
         self.audio_lock = threading.Lock()
+        self.has_audio = has_audio
 
-        self.proc = subprocess.Popen(
-            [
-                'ffmpeg',
-                '-loglevel', 'error',
-                '-i', url,
-                '-f', 'rawvideo',
-                '-pix_fmt', 'bgr24',
-                '-an',  # sin audio en stdout
-                'pipe:1',
+        # Configurar ffmpeg según si tiene audio o no
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-loglevel', 'error',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-fflags', '+genpts',
+            '-avoid_negative_ts', 'make_zero',
+            '-i', url,
+            '-c:v', 'rawvideo',
+            '-pix_fmt', 'bgr24',
+            '-vsync', '0',
+            '-an',  # sin audio en stdout
+            '-f', 'rawvideo',
+            'pipe:1'
+        ]
+        
+        # Solo agregar audio si el stream tiene audio
+        if has_audio:
+            ffmpeg_cmd.extend([
                 '-f', 's16le',
                 '-acodec', 'pcm_s16le',
                 '-ac', '2',
                 '-ar', '44100',
                 'pipe:2'
-            ],
+            ])
+
+        self.proc = subprocess.Popen(
+            ffmpeg_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=10**8
         )
         self.audio_pipe = self.proc.stderr
-        print(f"FFmpeg process started for {url}")
+        print(f"FFmpeg process started for {url} (PID: {self.proc.pid})")
+
+        # Hilo para leer errores de ffmpeg
+        self.error_thread = threading.Thread(target=self._error_reader)
+        self.error_thread.start()
 
         self.thread = threading.Thread(target=self.update)
         self.thread.start()
         
-        # Hilo separado para leer audio continuamente
-        self.audio_reader_thread = threading.Thread(target=self._audio_reader)
-        self.audio_reader_thread.start()
+        # Solo crear hilo de audio si el stream tiene audio
+        if has_audio:
+            self.audio_reader_thread = threading.Thread(target=self._audio_reader)
+            self.audio_reader_thread.start()
+        else:
+            self.audio_reader_thread = None
 
     def update(self):
         frame_size = self.width * self.height * 3
+        consecutive_errors = 0
+        frames_received = 0
         while self.running:
             raw_frame = self.proc.stdout.read(frame_size)
+            if len(raw_frame) == frame_size:
+                frames_received += 1
+                if frames_received % 30 == 0:  # Cada 30 frames
+                    print(f"Received {frames_received} frames from {self.url}")
             if len(raw_frame) != frame_size:
+                consecutive_errors += 1
+                print(f"Frame size mismatch: expected {frame_size}, got {len(raw_frame)} from {self.url}")
+                if consecutive_errors > 10:
+                    print(f"Too many consecutive errors reading frames from {self.url}")
+                    break
                 continue
+            consecutive_errors = 0
             frame = np.frombuffer(raw_frame, np.uint8).reshape((self.height, self.width, 3))
             self.frame = frame
 
     def get_frame(self):
         return self.frame
+
+    def is_working(self):
+        """Verificar si el stream está funcionando correctamente"""
+        if self.proc.poll() is not None:
+            print(f"FFmpeg process for {self.url} has terminated")
+            return False
+        return self.frame is not None
+
+    def _error_reader(self):
+        """Hilo para leer errores de ffmpeg"""
+        while self.running:
+            try:
+                error_line = self.proc.stderr.readline()
+                if error_line:
+                    print(f"FFmpeg error for {self.url}: {error_line.decode().strip()}")
+            except:
+                break
 
     def _audio_reader(self):
         """Hilo que lee continuamente el audio del pipe"""
@@ -92,6 +166,9 @@ class VideoStream:
         print(f"Audio reader stopped for {self.url}, total bytes read: {bytes_read}")
 
     def start_audio(self):
+        if not self.has_audio:
+            print(f"Cannot start audio for {self.url} - no audio stream")
+            return
         if self.audio_running:
             return
         print(f"Starting audio for {self.url}")
@@ -137,7 +214,9 @@ class VideoStream:
         self.stop_audio()
         self.proc.kill()
         self.thread.join()
-        self.audio_reader_thread.join()
+        if self.audio_reader_thread:
+            self.audio_reader_thread.join()
+        self.error_thread.join()
         if self.audio_pipe:
             self.audio_pipe.close()
 
@@ -155,56 +234,68 @@ def get_stream_size(url):
     height = info['streams'][0]['height']
     return width, height
 
-def check_stream_audio(url):
-    """Verificar si el stream tiene audio"""
+def test_stream_accessibility(url):
+    """Verificar si un stream es accesible"""
     cmd = [
         'ffprobe', '-v', 'error',
-        '-select_streams', 'a:0',
         '-show_entries', 'stream=codec_type',
         '-of', 'json',
         url
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        info = json.loads(result.stdout)
-        has_audio = len(info.get('streams', [])) > 0
-        print(f"Stream {url} has audio: {has_audio}")
-        return has_audio
-    except:
-        print(f"Stream {url} has audio: False (error checking)")
-        return False
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            has_video = any(stream.get('codec_type') == 'video' for stream in info.get('streams', []))
+            has_audio = any(stream.get('codec_type') == 'audio' for stream in info.get('streams', []))
+            print(f"Stream {url} is accessible, has video: {has_video}, has audio: {has_audio}")
+            return True, has_audio
+        else:
+            print(f"Stream {url} is not accessible (return code: {result.returncode})")
+            return False, False
+    except subprocess.TimeoutExpired:
+        print(f"Stream {url} timeout")
+        return False, False
+    except Exception as e:
+        print(f"Stream {url} error: {e}")
+        return False, False
 
 def main():
     # Configuración de los streams RTSP
     RTSP_URLS = [
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=1&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=2&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=3&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=4&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=5&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=6&subtype=0",
-        "https://rt-esp.rttv.com/dvr/rtesp/playlist_800Kb.m3u8"
+            "https://s81.ipcamlive.com/streams_timeshift/285cbf3053597caa2/stream.m3u8",
+            "https://s61.ipcamlive.com/streams/3dblxt98eyv3wus5q/stream.m3u8",
+            "https://streaming.novazion.com/HotelCarre/hotelcarre.stream/playlist.m3u8",
     ]
-    RTSP_URLS = [
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=2&subtype=0",
-        "rtsp://asd:123456ASD@192.168.2.153:554/cam/realmonitor?channel=6&subtype=0",]
 
     # Inicializar SDL2
     sdl2.ext.init()
-    window = sdl2.ext.Window("RTSP Stream", size=(1680, 1050), flags=sdl2.SDL_WINDOW_RESIZABLE)
+    screen_width, screen_height = get_screen_size()
+    window = sdl2.ext.Window("RTSP Stream", size=(screen_width, screen_height), flags=sdl2.SDL_WINDOW_RESIZABLE)
     window.show()
     renderer = sdl2.ext.Renderer(window)
 
     # Crear una lista de flujos de video
     streams = []
     for url in RTSP_URLS:
-        check_stream_audio(url)
+        print(f"\n--- Testing stream: {url} ---")
+        is_accessible, has_audio = test_stream_accessibility(url)
+        if not is_accessible:
+            print(f"Skipping {url} - not accessible")
+            continue
+        
         try:
             width, height = get_stream_size(url)
         except Exception as e:
             print(f"No se pudo obtener tamaño de {url}: {e}, usando 640x480")
             width, height = 640, 480
-        streams.append(VideoStream(url, width, height))
+        streams.append(VideoStream(url, width, height, has_audio))
+        print(f"Successfully created stream for {url}")
+    
+    print(f"\nTotal streams created: {len(streams)}")
+    if len(streams) == 0:
+        print("No streams could be created. Exiting.")
+        return
 
     # Variable para saber si hay un stream maximizado
     maximized_index = None
@@ -267,6 +358,8 @@ def main():
         renderer.clear()
         if maximized_index is None:
             for i, stream in enumerate(streams):
+                if not stream.is_working():
+                    continue
                 frame = stream.get_frame()
                 if frame is not None:
                     frame_resized = cv2.resize(frame, (panel_w, panel_h), interpolation=cv2.INTER_AREA)
@@ -284,6 +377,10 @@ def main():
                     sdl2.SDL_DestroyTexture(texture)
         else:
             stream = streams[maximized_index]
+            if not stream.is_working():
+                print(f"Maximized stream {maximized_index} is not working")
+                maximized_index = None
+                continue
             frame = stream.get_frame()
             if frame is not None:
                 frame_resized = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_AREA)
